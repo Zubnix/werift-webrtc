@@ -84,11 +84,11 @@ export class RTCSctpTransport {
           }
         }),
       ].map((e) => e.unSubscribe),
-      () => (this.sctp.onSackReceived = async () => {}),
+      () => (this.sctp.onSackReceived = () => {}),
     ];
 
-    this.sctp.onSackReceived = async () => {
-      await this.dataChannelFlush();
+    this.sctp.onSackReceived = () => {
+      this.dataChannelFlush();
     };
   }
 
@@ -100,7 +100,7 @@ export class RTCSctpTransport {
     return Object.values(this.dataChannels).find((d) => d.label === label);
   }
 
-  private datachannelReceive = async (
+  private datachannelReceive = (
     streamId: number,
     ppId: number,
     data: Buffer
@@ -170,7 +170,7 @@ export class RTCSctpTransport {
               WEBRTC_DCEP,
               Buffer.from(jspack.Pack("!B", [DATA_CHANNEL_ACK])),
             ]);
-            await this.dataChannelFlush();
+            this.dataChannelFlush();
           }
           break;
         case DATA_CHANNEL_ACK:
@@ -266,7 +266,7 @@ export class RTCSctpTransport {
     this.dataChannelFlush();
   }
 
-  private async dataChannelFlush() {
+  private dataChannelFlush() {
     // """
     // Try to flush buffered data to the SCTP layer.
 
@@ -292,7 +292,7 @@ export class RTCSctpTransport {
       }
 
       if (protocol === WEBRTC_DCEP) {
-        await this.sctp.send(streamId, protocol, userData, {
+        this.sctp.send(streamId, protocol, userData, {
           ordered: true,
         });
       } else {
@@ -300,7 +300,7 @@ export class RTCSctpTransport {
           ? Date.now() + channel.maxPacketLifeTime / 1000
           : undefined;
 
-        await this.sctp.send(streamId, protocol, userData, {
+        this.sctp.send(streamId, protocol, userData, {
           expiry,
           maxRetransmits: channel.maxRetransmits,
           ordered: channel.ordered,
@@ -334,7 +334,7 @@ export class RTCSctpTransport {
     this.sctp.setRemotePort(port);
   }
 
-  async start(remotePort: number) {
+  start(remotePort: number) {
     if (this.isServer) {
       this.dataChannelId = 0;
     } else {
@@ -342,12 +342,12 @@ export class RTCSctpTransport {
     }
     this.sctp.isServer = this.isServer;
 
-    await this.sctp.start(remotePort);
+    this.sctp.start(remotePort);
   }
 
-  async stop() {
+  stop() {
     this.dtlsTransport.dataReceiver = () => {};
-    await this.sctp.stop();
+    this.sctp.stop();
   }
 
   dataChannelClose(channel: RTCDataChannel) {

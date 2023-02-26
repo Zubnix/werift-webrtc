@@ -90,7 +90,7 @@ export class SCTP {
   readonly onReconfigStreams = new Event<[number[]]>();
   /**streamId: number, ppId: number, data: Buffer */
   readonly onReceive = new Event<[number, number, Buffer]>();
-  onSackReceived: () => Promise<void> = async () => {};
+  onSackReceived: () => void = () => {};
 
   associationState = SCTP_STATE.CLOSED;
   started = false;
@@ -156,8 +156,6 @@ export class SCTP {
   private timer2Handle?: any;
   private timer2Chunk?: Chunk;
   private timer2Failures = 0;
-  /**t3 is wait for data sack */
-  private timer3Handle?: any;
   /**Re-configuration Timer */
   private timerReconfigHandle?: any;
   private timerReconfigFailures = 0;
@@ -190,7 +188,7 @@ export class SCTP {
   }
 
   // call from dtls transport
-  private async handleData(data: Buffer) {
+  private handleData(data: Buffer) {
     let expectedTag: number;
 
     const [, , verificationTag, chunks] = parsePacket(data);
@@ -209,15 +207,15 @@ export class SCTP {
     }
 
     for (const chunk of chunks) {
-      await this.receiveChunk(chunk);
+      this.receiveChunk(chunk);
     }
 
     if (this.sackNeeded) {
-      await this.sendSack();
+      this.sendSack();
     }
   }
 
-  private async sendSack() {
+  private sendSack() {
     const gaps: [number, number][] = [];
     let gapNext: number;
     [...this.sackMisOrdered].sort().forEach((tsn) => {
@@ -235,15 +233,13 @@ export class SCTP {
     sack.duplicates = [...this.sackDuplicates];
     sack.gaps = gaps;
 
-    await this.sendChunk(sack).catch((err: Error) => {
-      log("send sack failed", err.message);
-    });
+    this.sendChunk(sack);
 
     this.sackDuplicates = [];
     this.sackNeeded = false;
   }
 
-  private async receiveChunk(chunk: Chunk) {
+  private receiveChunk(chunk: Chunk) {
     switch (chunk.type) {
       case DataChunk.type:
         {
@@ -287,9 +283,7 @@ export class SCTP {
           ]);
           ack.params.push([SCTP_STATE_COOKIE, cookie]);
           log("send initAck", ack);
-          await this.sendChunk(ack).catch((err: Error) => {
-            log("send initAck failed", err.message);
-          });
+          this.sendChunk(ack);
         }
         break;
       case InitAckChunk.type:
@@ -320,9 +314,7 @@ export class SCTP {
               break;
             }
           }
-          await this.sendChunk(echo).catch((err: Error) => {
-            log("send echo failed", err.message);
-          });
+          this.sendChunk(echo);
 
           this.timer1Start(echo);
           this.setState(SCTP_STATE.COOKIE_ECHOED);
@@ -330,16 +322,14 @@ export class SCTP {
         break;
       case SackChunk.type:
         {
-          await this.receiveSackChunk(chunk as SackChunk);
+          // don't care
         }
         break;
       case HeartbeatChunk.type:
         {
           const ack = new HeartbeatAckChunk();
           ack.params = (chunk as HeartbeatChunk).params;
-          await this.sendChunk(ack).catch((err: Error) => {
-            log("send heartbeat ack failed", err.message);
-          });
+          this.sendChunk(ack);
         }
         break;
       case AbortChunk.type:
@@ -352,9 +342,7 @@ export class SCTP {
           this.timer2Cancel();
           this.setState(SCTP_STATE.SHUTDOWN_RECEIVED);
           const ack = new ShutdownAckChunk();
-          await this.sendChunk(ack).catch((err: Error) => {
-            log("send shutdown ack failed", err.message);
-          });
+          this.sendChunk(ack);
           this.t2Start(ack);
           this.setState(SCTP_STATE.SHUTDOWN_SENT);
         }
@@ -391,15 +379,11 @@ export class SCTP {
               ErrorChunk.CODE.StaleCookieError,
               Buffer.concat([...Array(8)].map(() => Buffer.from("\x00"))),
             ]);
-            await this.sendChunk(error).catch((err: Error) => {
-              log("send errorChunk failed", err.message);
-            });
+            this.sendChunk(error);
             return;
           }
           const ack = new CookieAckChunk();
-          await this.sendChunk(ack).catch((err: Error) => {
-            log("send cookieAck failed", err.message);
-          });
+          this.sendChunk(ack);
           this.setState(SCTP_STATE.ESTABLISHED);
         }
         break;
@@ -425,7 +409,7 @@ export class SCTP {
           for (const [type, body] of reconfig.params) {
             const target = RECONFIG_PARAM_BY_TYPES[type];
             if (target) {
-              await this.receiveReconfigParam(target.parse(body));
+              this.receiveReconfigParam(target.parse(body));
             }
           }
         }
@@ -448,7 +432,7 @@ export class SCTP {
     }
   }
 
-  private async receiveReconfigParam(param: StreamParam) {
+  private receiveReconfigParam(param: StreamParam) {
     log("receiveReconfigParam", RECONFIG_PARAM_BY_TYPES[param.type]);
     switch (param.type) {
       case OutgoingSSNResetRequestParam.type:
@@ -461,19 +445,16 @@ export class SCTP {
             reconfigResult.ReconfigResultSuccessPerformed
           );
           this.reconfigResponseSeq = p.requestSequence;
-          await this.sendReconfigParam(response);
+          this.sendReconfigParam(response);
 
           // # mark closed inbound streams
-          await Promise.all(
-            p.streams.map(async (streamId) => {
-              delete this.inboundStreams[streamId];
-              if (this.outboundStreamSeq[streamId]) {
-                this.reconfigQueue.push(streamId);
-                // await this.sendResetRequest(streamId);
-              }
-            })
-          );
-          await this.transmitReconfigRequest();
+          for (const streamId of p.streams) {
+            delete this.inboundStreams[streamId];
+            if (this.outboundStreamSeq[streamId]) {
+              this.reconfigQueue.push(streamId);
+            }
+          }
+          this.transmitReconfigRequest();
           // # close data channel
           this.onReconfigStreams.execute(p.streams);
         }
@@ -501,7 +482,7 @@ export class SCTP {
             this.reconfigRequest = undefined;
             this.timerReconfigCancel();
             if (this.reconfigQueue.length > 0) {
-              await this.transmitReconfigRequest();
+              this.transmitReconfigRequest();
             }
           }
         }
@@ -512,7 +493,7 @@ export class SCTP {
           this._inboundStreamsCount += add.newStreams;
           const res = new ReconfigResponseParam(add.requestSequence, 1);
           this.reconfigResponseSeq = add.requestSequence;
-          await this.sendReconfigParam(res);
+          this.sendReconfigParam(res);
         }
         break;
     }
@@ -531,119 +512,6 @@ export class SCTP {
       this.advertisedRwnd += message[2].length;
       this.receive(...message);
     }
-  }
-
-  private async receiveSackChunk(chunk: SackChunk) {
-    // """
-    // Handle a SACK chunk.
-    // """
-
-    if (uint32Gt(this.lastSackedTsn, chunk.cumulativeTsn)) return;
-
-    const receivedTime = Date.now() / 1000;
-    this.lastSackedTsn = chunk.cumulativeTsn;
-    const cwndFullyUtilized = this.flightSize >= this.cwnd;
-    let done = 0,
-      doneBytes = 0;
-
-    // # handle acknowledged data
-    while (
-      this.sentQueue.length > 0 &&
-      uint32Gte(this.lastSackedTsn, this.sentQueue[0].tsn)
-    ) {
-      const sChunk = this.sentQueue.shift()!;
-      done++;
-      if (!sChunk?.acked) {
-        doneBytes += sChunk.bookSize;
-        this.flightSizeDecrease(sChunk);
-      }
-
-      if (done === 1 && sChunk.sentCount === 1) {
-        this.updateRto(receivedTime - sChunk.sentTime!);
-      }
-    }
-
-    // # handle gap blocks
-    let loss = false;
-    if (chunk.gaps.length > 0) {
-      const seen = new Set();
-      let highestSeenTsn: number;
-      chunk.gaps.forEach((gap) =>
-        range(gap[0], gap[1] + 1).forEach((pos) => {
-          highestSeenTsn = (chunk.cumulativeTsn + pos) % SCTP_TSN_MODULO;
-          seen.add(highestSeenTsn);
-        })
-      );
-
-      let highestNewlyAcked = chunk.cumulativeTsn;
-      for (const sChunk of this.sentQueue) {
-        if (uint32Gt(sChunk.tsn, highestSeenTsn!)) {
-          break;
-        }
-        if (seen.has(sChunk.tsn) && !sChunk.acked) {
-          doneBytes += sChunk.bookSize;
-          sChunk.acked = true;
-          this.flightSizeDecrease(sChunk);
-          highestNewlyAcked = sChunk.tsn;
-        }
-      }
-
-      // # strike missing chunks prior to HTNA
-      for (const sChunk of this.sentQueue) {
-        if (uint32Gt(sChunk.tsn, highestNewlyAcked)) {
-          break;
-        }
-        if (!seen.has(sChunk.tsn)) {
-          sChunk.misses++;
-          if (sChunk.misses === 3) {
-            sChunk.misses = 0;
-            if (!this.maybeAbandon(sChunk)) {
-              sChunk.retransmit = true;
-            }
-            sChunk.acked = false;
-            this.flightSizeDecrease(sChunk);
-            loss = true;
-          }
-        }
-      }
-    }
-
-    // # adjust congestion window
-    if (this.fastRecoveryExit === undefined) {
-      if (done && cwndFullyUtilized) {
-        if (this.cwnd <= this.ssthresh!) {
-          this.cwnd += Math.min(doneBytes, USERDATA_MAX_LENGTH);
-        } else {
-          this.partialBytesAcked += doneBytes;
-          if (this.partialBytesAcked >= this.cwnd) {
-            this.partialBytesAcked -= this.cwnd;
-            this.cwnd += USERDATA_MAX_LENGTH;
-          }
-        }
-      }
-      if (loss) {
-        this.ssthresh = Math.max(
-          Math.floor(this.cwnd / 2),
-          4 * USERDATA_MAX_LENGTH
-        );
-        this.cwnd = this.ssthresh;
-        this.partialBytesAcked = 0;
-        this.fastRecoveryExit = this.sentQueue[this.sentQueue.length - 1].tsn;
-        this.fastRecoveryTransmit = true;
-      }
-    } else if (uint32Gte(chunk.cumulativeTsn, this.fastRecoveryExit)) {
-      this.fastRecoveryExit = undefined;
-    }
-
-    if (this.sentQueue.length === 0) {
-      this.timer3Cancel();
-    } else if (done > 0) {
-      this.timer3Restart();
-    }
-
-    this.updateAdvancedPeerAckPoint();
-    await this.onSackReceived();
-    await this.transmit();
   }
 
   receiveForwardTsnChunk(chunk: ForwardTsnChunk) {
@@ -738,7 +606,7 @@ export class SCTP {
     return false;
   }
 
-  send = async (
+  send = (
     streamId: number,
     ppId: number,
     userData: Buffer,
@@ -791,28 +659,20 @@ export class SCTP {
       this.outboundStreamSeq[streamId] = uint16Add(streamSeqNum, 1);
     }
 
-    if (!this.timer3Handle) {
-      await this.transmit();
-    } else {
-      await new Promise((r) => setImmediate(r));
-    }
+    // if (!this.timer3Handle) {
+    this.transmit();
+    // }
   };
 
-  private async transmit() {
+  private transmit() {
     // """
     // Transmit outbound data.
     // """
 
     // # send FORWARD TSN
     if (this.forwardTsnChunk) {
-      await this.sendChunk(this.forwardTsnChunk).catch((err: Error) => {
-        log("send forwardTsn failed", err.message);
-      });
+      this.sendChunk(this.forwardTsnChunk);
       this.forwardTsnChunk = undefined;
-
-      if (!this.timer3Handle) {
-        this.timer3Start();
-      }
     }
 
     const burstSize =
@@ -835,13 +695,7 @@ export class SCTP {
         dataChunk.misses = 0;
         dataChunk.retransmit = false;
         dataChunk.sentCount++;
-        await this.sendChunk(dataChunk).catch((err: Error) => {
-          log("send data failed", err.message);
-        });
-
-        if (retransmitEarliest) {
-          this.timer3Restart();
-        }
+        this.sendChunk(dataChunk);
       }
       retransmitEarliest = false;
     }
@@ -858,16 +712,14 @@ export class SCTP {
       chunk.sentCount++;
       chunk.sentTime = Date.now() / 1000;
 
-      await this.sendChunk(chunk).catch((err: Error) => {
-        log("send data outboundQueue failed", err.message);
-      });
-      if (!this.timer3Handle) {
-        this.timer3Start();
-      }
+      this.sendChunk(chunk);
+      // if (!this.timer3Handle) {
+      //   this.timer3Start();
+      // }
     }
   }
 
-  async transmitReconfigRequest() {
+  transmitReconfigRequest() {
     if (
       this.reconfigQueue.length > 0 &&
       this.associationState === SCTP_STATE.ESTABLISHED &&
@@ -885,29 +737,25 @@ export class SCTP {
       this.reconfigRequestSeq = tsnPlusOne(this.reconfigRequestSeq);
 
       this.reconfigRequest = param;
-      await this.sendReconfigParam(param);
+      this.sendReconfigParam(param);
       this.timerReconfigHandleStart();
     }
   }
 
-  async sendReconfigParam(param: StreamParam) {
+  sendReconfigParam(param: StreamParam) {
     log("sendReconfigParam", param);
     const chunk = new ReconfigChunk();
     chunk.params.push([param.type, param.bytes]);
-    await this.sendChunk(chunk).catch((err: Error) => {
-      log("send reconfig failed", err.message);
-    });
+    this.sendChunk(chunk);
   }
 
   // https://github.com/pion/sctp/pull/44/files
-  private async sendResetRequest(streamId: number) {
+  private sendResetRequest(streamId: number) {
     log("sendResetRequest", streamId);
     const chunk = new DataChunk(0, undefined);
     chunk.streamId = streamId;
     this.outboundQueue.push(chunk);
-    if (!this.timer3Handle) {
-      await this.transmit();
-    }
+    this.transmit();
   }
 
   private flightSizeIncrease(chunk: DataChunk) {
@@ -935,9 +783,7 @@ export class SCTP {
       this.setState(SCTP_STATE.CLOSED);
     } else {
       setImmediate(() => {
-        this.sendChunk(this.timer1Chunk!).catch((err: Error) => {
-          log("send timer1 chunk failed", err.message);
-        });
+        this.sendChunk(this.timer1Chunk!);
       });
       this.timer1Handle = setTimeout(this.timer1Expired, this.rto * 1000);
     }
@@ -966,9 +812,7 @@ export class SCTP {
       this.setState(SCTP_STATE.CLOSED);
     } else {
       setImmediate(() => {
-        this.sendChunk(this.timer2Chunk!).catch((err: Error) => {
-          log("send timer2Chunk failed", err.message);
-        });
+        this.sendChunk(this.timer2Chunk!);
       });
       this.timer2Handle = setTimeout(this.timer2Expired, this.rto * 1000);
     }
@@ -979,50 +823,6 @@ export class SCTP {
       clearTimeout(this.timer2Handle);
       this.timer2Handle = undefined;
       this.timer2Chunk = undefined;
-    }
-  }
-
-  /**t3 is wait for data sack */
-  private timer3Start() {
-    if (this.timer3Handle) throw new Error();
-    this.timer3Handle = setTimeout(this.timer3Expired, this.rto * 1000);
-  }
-
-  private timer3Restart() {
-    this.timer3Cancel();
-    // for performance
-    this.timer3Handle = setTimeout(this.timer3Expired, this.rto);
-  }
-
-  private timer3Expired = () => {
-    this.timer3Handle = undefined;
-
-    // # mark retransmit or abandoned chunks
-    this.sentQueue.forEach((chunk) => {
-      if (!this.maybeAbandon(chunk)) {
-        chunk.retransmit = true;
-      }
-    });
-    this.updateAdvancedPeerAckPoint();
-
-    // # adjust congestion window
-    this.fastRecoveryExit = undefined;
-    this.flightSize = 0;
-    this.partialBytesAcked = 0;
-
-    this.ssthresh = Math.max(
-      Math.floor(this.cwnd / 2),
-      4 * USERDATA_MAX_LENGTH
-    );
-    this.cwnd = USERDATA_MAX_LENGTH;
-
-    this.transmit();
-  };
-
-  private timer3Cancel() {
-    if (this.timer3Handle) {
-      clearTimeout(this.timer3Handle);
-      this.timer3Handle = undefined;
     }
   }
 
@@ -1037,7 +837,7 @@ export class SCTP {
     );
   }
 
-  private timerReconfigHandleExpired = async () => {
+  private timerReconfigHandleExpired = () => {
     this.timerReconfigFailures++;
     // back off
     this.rto = Math.ceil(this.rto * 1.5);
@@ -1049,7 +849,7 @@ export class SCTP {
       this.timerReconfigHandle = undefined;
     } else if (this.reconfigRequest) {
       log("timerReconfigHandleExpired", this.timerReconfigFailures, this.rto);
-      await this.sendReconfigParam(this.reconfigRequest);
+      this.sendReconfigParam(this.reconfigRequest);
 
       this.timerReconfigHandle = setTimeout(
         this.timerReconfigHandleExpired,
@@ -1066,61 +866,6 @@ export class SCTP {
     }
   }
 
-  private updateAdvancedPeerAckPoint() {
-    if (uint32Gt(this.lastSackedTsn, this.advancedPeerAckTsn)) {
-      this.advancedPeerAckTsn = this.lastSackedTsn;
-    }
-
-    let done = 0;
-    const streams: { [key: number]: number } = {};
-    while (this.sentQueue.length > 0 && this.sentQueue[0].abandoned) {
-      const chunk = this.sentQueue.shift()!;
-      this.advancedPeerAckTsn = chunk.tsn;
-      done++;
-      if (!(chunk.flags & SCTP_DATA_UNORDERED)) {
-        streams[chunk.streamId] = chunk.streamSeqNum;
-      }
-    }
-
-    if (done) {
-      this.forwardTsnChunk = new ForwardTsnChunk(0, undefined);
-      this.forwardTsnChunk.cumulativeTsn = this.advancedPeerAckTsn;
-      this.forwardTsnChunk.streams = Object.entries(streams).map(([k, v]) => [
-        Number(k),
-        v,
-      ]);
-    }
-  }
-
-  private maybeAbandon(chunk: DataChunk): boolean {
-    if (chunk.abandoned) return true;
-    const abandon =
-      (!!chunk.maxRetransmits && chunk.maxRetransmits < chunk.sentCount!) ||
-      (!!chunk.expiry && chunk.expiry < Date.now() / 1000);
-    if (!abandon) return false;
-
-    const chunkPos = this.sentQueue.findIndex((v) => v.type === chunk.type);
-    for (const pos of range(chunkPos, -1, -1)) {
-      const oChunk = this.sentQueue[pos];
-      oChunk.abandoned = true;
-      oChunk.retransmit = false;
-      if (oChunk.flags & SCTP_DATA_LAST_FRAG) {
-        break;
-      }
-    }
-
-    for (const pos of range(chunkPos, this.sentQueue.length)) {
-      const oChunk = this.sentQueue[pos];
-      oChunk.abandoned = true;
-      oChunk.retransmit = false;
-      if (oChunk.flags & SCTP_DATA_LAST_FRAG) {
-        break;
-      }
-    }
-
-    return true;
-  }
-
   static getCapabilities() {
     return new RTCSctpCapabilities(65536);
   }
@@ -1129,7 +874,7 @@ export class SCTP {
     this.remotePort = port;
   }
 
-  async start(remotePort?: number) {
+  start(remotePort?: number) {
     if (!this.started) {
       this.started = true;
       this.setConnectionState("connecting");
@@ -1139,12 +884,12 @@ export class SCTP {
       }
 
       if (!this.isServer) {
-        await this.init();
+        this.init();
       }
     }
   }
 
-  private async init() {
+  private init() {
     const init = new InitChunk();
     init.initiateTag = this.localVerificationTag;
     init.advertisedRwnd = this.advertisedRwnd;
@@ -1155,7 +900,7 @@ export class SCTP {
     log("send init", init);
 
     try {
-      await this.sendChunk(init);
+      this.sendChunk(init);
 
       // # start T1 timer and enter COOKIE-WAIT state
       this.timer1Start(init);
@@ -1176,7 +921,7 @@ export class SCTP {
     params.push([SCTP_SUPPORTED_CHUNK_EXT, Buffer.from(extensions)]);
   }
 
-  async sendChunk(chunk: Chunk) {
+  private sendChunk(chunk: Chunk) {
     if (this.state === "closed") return;
     if (this.remotePort === undefined) {
       throw new Error("invalid remote port");
@@ -1188,7 +933,7 @@ export class SCTP {
       this.remoteVerificationTag,
       chunk
     );
-    await this.transport.send(packet);
+    this.transport.send(packet);
   }
 
   setState(state: SCTP_STATE) {
@@ -1200,7 +945,7 @@ export class SCTP {
     } else if (state === SCTP_STATE.CLOSED) {
       this.timer1Cancel();
       this.timer2Cancel();
-      this.timer3Cancel();
+      // this.timer3Cancel();
       this.setConnectionState("closed");
       this.removeAllListeners();
     }
@@ -1212,21 +957,19 @@ export class SCTP {
     this.stateChanged[state].execute();
   }
 
-  async stop() {
+  stop() {
     if (this.associationState !== SCTP_STATE.CLOSED) {
-      await this.abort();
+      this.abort();
     }
     this.setState(SCTP_STATE.CLOSED);
     clearTimeout(this.timer1Handle);
     clearTimeout(this.timer2Handle);
-    clearTimeout(this.timer3Handle);
+    // clearTimeout(this.timer3Handle);
   }
 
-  async abort() {
+  abort() {
     const abort = new AbortChunk();
-    await this.sendChunk(abort).catch((err: Error) => {
-      log("send abort failed", err.message);
-    });
+    this.sendChunk(abort);
   }
 
   private removeAllListeners() {

@@ -2,7 +2,7 @@ import { RemoteInfo, Socket } from "dgram";
 
 export interface Transport {
   onData?: (buf: Buffer) => void;
-  send: (buf: Buffer) => Promise<void>;
+  send: (buf: Buffer) => void;
   close: () => void;
 }
 
@@ -15,16 +15,9 @@ export class UdpTransport implements Transport {
   }
   onData?: (buf: Buffer) => void;
 
-  send = (buf: Buffer) =>
-    new Promise<void>((r, f) =>
-      this.upd.send(buf, this.rinfo.port, this.rinfo.address, (err) => {
-        if (err) {
-          f(err);
-        } else {
-          r();
-        }
-      })
-    );
+  send = (buf: Buffer) => {
+    this.upd.send(buf, this.rinfo.port, this.rinfo.address);
+  };
 
   close() {
     this.upd.close();
